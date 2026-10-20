@@ -6,8 +6,37 @@ import { requireAdmin } from "../middleware/admin.middleware";
 
 const router = Router();
 
+// Generate seat labels in rows of 10.
+// Example: 25 seats -> A1-A10, B1-B10, C1-C5.
+function generateSeatNumbers(totalSeats: number): string[] {
+  const seatsPerRow = 10;
+  const seatNumbers: string[] = [];
+
+  for (let i = 0; i < totalSeats; i++) {
+    const rowIndex = Math.floor(i / seatsPerRow);
+    const seatPosition = (i % seatsPerRow) + 1;
+
+    let rowLabel = "";
+    let number = rowIndex;
+
+    while (number >= 0) {
+      rowLabel = String.fromCharCode((number % 26) + 65) + rowLabel;
+      number = Math.floor(number / 26) - 1;
+    }
+
+    seatNumbers.push(`${rowLabel}${seatPosition}`);
+  }
+
+  return seatNumbers;
+}
+
+// Validate a positive integer ID.
+function isValidId(id: number): boolean {
+  return Number.isInteger(id) && id > 0;
+}
+
 // GET /api/shows
-// Public: List shows, optionally filtered by movieId or theaterId
+// Public: List shows, optionally filtered by movieId, theaterId, or date.
 router.get("/", async (req: Request, res: Response) => {
   try {
     const { movieId, theaterId, date } = req.query;
@@ -16,15 +45,15 @@ router.get("/", async (req: Request, res: Response) => {
       movieId?: number;
       theaterId?: number;
       showDate?: {
-        gte?: Date;
-        lt?: Date;
+        gte: Date;
+        lt: Date;
       };
     } = {};
 
     if (movieId !== undefined) {
       const id = Number(movieId);
 
-      if (!Number.isInteger(id) || id <= 0) {
+      if (!isValidId(id)) {
         res.status(400).json({
           success: false,
           message: "Invalid movieId.",
@@ -38,7 +67,7 @@ router.get("/", async (req: Request, res: Response) => {
     if (theaterId !== undefined) {
       const id = Number(theaterId);
 
-      if (!Number.isInteger(id) || id <= 0) {
+      if (!isValidId(id)) {
         res.status(400).json({
           success: false,
           message: "Invalid theaterId.",
@@ -99,6 +128,7 @@ router.get("/", async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("Error fetching shows:", error);
+
     res.status(500).json({
       success: false,
       message: "Failed to fetch shows.",
@@ -107,12 +137,12 @@ router.get("/", async (req: Request, res: Response) => {
 });
 
 // GET /api/shows/:id
-// Public: Get show details
+// Public: Get show details and every seat.
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const showId = Number(req.params.id);
 
-    if (!Number.isInteger(showId) || showId <= 0) {
+    if (!isValidId(showId)) {
       res.status(400).json({
         success: false,
         message: "Invalid show ID.",
@@ -139,21 +169,52 @@ router.get("/:id", async (req: Request, res: Response) => {
       return;
     }
 
+    // Backfill seats for shows created before automatic seat generation.
+    // Existing seat records, including booked seats, are preserved.
+    const expectedSeats = generateSeatNumbers(show.totalSeats);
+    const existingSeatNumbers = new Set(
+      show.seats.map((seat) => seat.seatNumber)
+    );
+
+    const missingSeats = expectedSeats
+      .filter((seatNumber) => !existingSeatNumbers.has(seatNumber))
+      .map((seatNumber) => ({
+        showId,
+        seatNumber,
+      }));
+
+    if (missingSeats.length > 0) {
+      await prisma.seat.createMany({
+        data: missingSeats,
+        skipDuplicates: true,
+      });
+    }
+
+    // Fetch the latest seat records after backfilling.
+    const seats = await prisma.seat.findMany({
+      where: { showId },
+      orderBy: { seatNumber: "asc" },
+    });
+
     res.status(200).json({
       success: true,
-      data: show,
+      data: {
+        ...show,
+        seats,
+      },
     });
   } catch (error) {
-    console.error("Error fetching show:", error);
+    console.error("Error fetching show details:", error);
+
     res.status(500).json({
       success: false,
-      message: "Failed to fetch show.",
+      message: "Failed to fetch show details.",
     });
   }
 });
 
 // POST /api/shows
-// Admin only: Create a show
+// Admin only: Create a show and all its seat records.
 router.post(
   "/",
   authenticateToken,
@@ -216,16 +277,15 @@ router.post(
         return;
       }
 
-      if (
-        !Number.isInteger(totalSeats) ||
-        totalSeats <= 0
-      ) {
+      if (!Number.isInteger(totalSeats) || totalSeats <= 0) {
         res.status(400).json({
           success: false,
           message: "totalSeats must be a positive integer.",
         });
         return;
       }
+
+      const parsedShowDate = new Date(showDate);
 
       const movie = await prisma.movie.findUnique({
         where: { id: movieId },
@@ -253,29 +313,48 @@ router.post(
         return;
       }
 
-      const show = await prisma.show.create({
-        data: {
-          movieId,
-          theaterId,
-          showDate: new Date(showDate),
-          showTime,
-          ticketPrice,
-          totalSeats,
-          availableSeats: totalSeats,
-        },
-        include: {
-          movie: true,
-          theater: true,
-        },
+      const show = await prisma.$transaction(async (tx) => {
+        const createdShow = await tx.show.create({
+          data: {
+            movieId,
+            theaterId,
+            showDate: parsedShowDate,
+            showTime,
+            ticketPrice,
+            totalSeats,
+            availableSeats: totalSeats,
+          },
+        });
+
+        const seatNumbers = generateSeatNumbers(totalSeats);
+
+        await tx.seat.createMany({
+          data: seatNumbers.map((seatNumber) => ({
+            showId: createdShow.id,
+            seatNumber,
+          })),
+        });
+
+        return tx.show.findUniqueOrThrow({
+          where: { id: createdShow.id },
+          include: {
+            movie: true,
+            theater: true,
+            seats: {
+              orderBy: { seatNumber: "asc" },
+            },
+          },
+        });
       });
 
       res.status(201).json({
         success: true,
-        message: "Show created successfully.",
+        message: "Show and seats created successfully.",
         data: show,
       });
     } catch (error) {
       console.error("Error creating show:", error);
+
       res.status(500).json({
         success: false,
         message: "Failed to create show.",
@@ -285,7 +364,8 @@ router.post(
 );
 
 // PUT /api/shows/:id
-// Admin only: Update a show
+// Admin only: Update a show.
+// When totalSeats increases, create the additional seat records.
 router.put(
   "/:id",
   authenticateToken,
@@ -294,7 +374,7 @@ router.put(
     try {
       const showId = Number(req.params.id);
 
-      if (!Number.isInteger(showId) || showId <= 0) {
+      if (!isValidId(showId)) {
         res.status(400).json({
           success: false,
           message: "Invalid show ID.",
@@ -436,45 +516,59 @@ router.put(
         return;
       }
 
-      const existingShow = await prisma.show.findUnique({
-        where: { id: showId },
-      });
-
-      if (!existingShow) {
-        res.status(404).json({
-          success: false,
-          message: "Show not found.",
+      const updatedShow = await prisma.$transaction(async (tx) => {
+        const existingShow = await tx.show.findUnique({
+          where: { id: showId },
         });
-        return;
-      }
 
-      if (
-        data.totalSeats !== undefined &&
-        data.totalSeats < existingShow.totalSeats
-      ) {
-        res.status(400).json({
-          success: false,
-          message: "totalSeats cannot be reduced. Existing seats may be booked.",
+        if (!existingShow) {
+          throw new Error("SHOW_NOT_FOUND");
+        }
+
+        if (
+          data.totalSeats !== undefined &&
+          data.totalSeats < existingShow.totalSeats
+        ) {
+          throw new Error("SEAT_COUNT_CANNOT_DECREASE");
+        }
+
+        const additionalSeats =
+          data.totalSeats !== undefined
+            ? data.totalSeats - existingShow.totalSeats
+            : 0;
+
+        const show = await tx.show.update({
+          where: { id: showId },
+          data: {
+            ...data,
+            ...(additionalSeats > 0
+              ? { availableSeats: { increment: additionalSeats } }
+              : {}),
+          },
         });
-        return;
-      }
 
-      const updatedShow = await prisma.show.update({
-        where: { id: showId },
-        data: {
-          ...data,
-          ...(data.totalSeats !== undefined
-            ? {
-                availableSeats: {
-                  increment: data.totalSeats - existingShow.totalSeats,
-                },
-              }
-            : {}),
-        },
-        include: {
-          movie: true,
-          theater: true,
-        },
+        if (additionalSeats > 0) {
+          const seatNumbers = generateSeatNumbers(show.totalSeats);
+
+          await tx.seat.createMany({
+            data: seatNumbers.map((seatNumber) => ({
+              showId,
+              seatNumber,
+            })),
+            skipDuplicates: true,
+          });
+        }
+
+        return tx.show.findUniqueOrThrow({
+          where: { id: showId },
+          include: {
+            movie: true,
+            theater: true,
+            seats: {
+              orderBy: { seatNumber: "asc" },
+            },
+          },
+        });
       });
 
       res.status(200).json({
@@ -483,7 +577,27 @@ router.put(
         data: updatedShow,
       });
     } catch (error) {
+      if (error instanceof Error && error.message === "SHOW_NOT_FOUND") {
+        res.status(404).json({
+          success: false,
+          message: "Show not found.",
+        });
+        return;
+      }
+
+      if (
+        error instanceof Error &&
+        error.message === "SEAT_COUNT_CANNOT_DECREASE"
+      ) {
+        res.status(400).json({
+          success: false,
+          message: "totalSeats cannot be reduced.",
+        });
+        return;
+      }
+
       console.error("Error updating show:", error);
+
       res.status(500).json({
         success: false,
         message: "Failed to update show.",
@@ -493,7 +607,7 @@ router.put(
 );
 
 // DELETE /api/shows/:id
-// Admin only: Delete a show
+// Admin only: Delete a show that has no booking history.
 router.delete(
   "/:id",
   authenticateToken,
@@ -502,7 +616,7 @@ router.delete(
     try {
       const showId = Number(req.params.id);
 
-      if (!Number.isInteger(showId) || showId <= 0) {
+      if (!isValidId(showId)) {
         res.status(400).json({
           success: false,
           message: "Invalid show ID.",
@@ -512,6 +626,11 @@ router.delete(
 
       const show = await prisma.show.findUnique({
         where: { id: showId },
+        include: {
+          _count: {
+            select: { bookings: true },
+          },
+        },
       });
 
       if (!show) {
@@ -522,16 +641,23 @@ router.delete(
         return;
       }
 
-      if (show.availableSeats < show.totalSeats) {
+      if (show._count.bookings > 0) {
         res.status(409).json({
           success: false,
-          message: "Cannot delete a show with existing bookings.",
+          message:
+            "Cannot delete a show that has booking history.",
         });
         return;
       }
 
-      await prisma.show.delete({
-        where: { id: showId },
+      await prisma.$transaction(async (tx) => {
+        await tx.seat.deleteMany({
+          where: { showId },
+        });
+
+        await tx.show.delete({
+          where: { id: showId },
+        });
       });
 
       res.status(200).json({
@@ -540,6 +666,7 @@ router.delete(
       });
     } catch (error) {
       console.error("Error deleting show:", error);
+
       res.status(500).json({
         success: false,
         message: "Failed to delete show.",

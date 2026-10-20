@@ -2,53 +2,12 @@
 import { Router } from "express";
 import prisma from "../lib/prisma";
 import { authenticateToken } from "../middleware/auth.middleware";
+import { requireAdmin } from "../middleware/admin.middleware";
 
 const router = Router();
 
-// POST - Create a theater (authentication required)
-router.post("/", authenticateToken, async (req, res) => {
-  try {
-    const { name, city, address } = req.body;
-
-    if (
-      typeof name !== "string" ||
-      !name.trim() ||
-      typeof city !== "string" ||
-      !city.trim() ||
-      typeof address !== "string" ||
-      !address.trim()
-    ) {
-      res.status(400).json({
-        success: false,
-        message: "Name, city, and address are required",
-      });
-      return;
-    }
-
-    const theater = await prisma.theater.create({
-      data: {
-        name: name.trim(),
-        city: city.trim(),
-        address: address.trim(),
-      },
-    });
-
-    res.status(201).json({
-      success: true,
-      message: "Theater created successfully",
-      data: theater,
-    });
-  } catch (error) {
-    console.error("Error creating theater:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to create theater",
-    });
-  }
-});
-
-// GET all theaters (public)
+// GET /api/theaters
+// Public: Get all theaters
 router.get("/", async (_req, res) => {
   try {
     const theaters = await prisma.theater.findMany({
@@ -57,165 +16,237 @@ router.get("/", async (_req, res) => {
       },
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       count: theaters.length,
       data: theaters,
     });
   } catch (error) {
-    console.error("Error fetching theaters:", error);
+    console.error("Get theaters error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Failed to fetch theaters",
+      message: "Failed to fetch theaters.",
     });
   }
 });
 
-// GET one theater by ID (public)
+// GET /api/theaters/:id
+// Public: Get a single theater
 router.get("/:id", async (req, res) => {
   try {
-    const id = Number(req.params.id);
+    const theaterId = Number(req.params.id);
 
-    if (!Number.isInteger(id) || id <= 0) {
-      res.status(400).json({
+    if (!Number.isInteger(theaterId) || theaterId <= 0) {
+      return res.status(400).json({
         success: false,
-        message: "Invalid theater ID",
+        message: "Invalid theater ID.",
       });
-      return;
     }
 
     const theater = await prisma.theater.findUnique({
-      where: { id },
+      where: {
+        id: theaterId,
+      },
     });
 
     if (!theater) {
-      res.status(404).json({
+      return res.status(404).json({
         success: false,
-        message: "Theater not found",
+        message: "Theater not found.",
       });
-      return;
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       data: theater,
     });
   } catch (error) {
-    console.error("Error fetching theater:", error);
+    console.error("Get theater error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Failed to fetch theater",
+      message: "Failed to fetch theater.",
     });
   }
 });
 
-// PUT - Update a theater (authentication required)
-router.put("/:id", authenticateToken, async (req, res) => {
+// POST /api/theaters
+// Admin only: Create a theater
+router.post("/", authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const id = Number(req.params.id);
+    const { name, location, address } = req.body;
 
-    if (!Number.isInteger(id) || id <= 0) {
-      res.status(400).json({
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      typeof location !== "string" ||
+      !location.trim() ||
+      (address !== undefined && typeof address !== "string")
+    ) {
+      return res.status(400).json({
         success: false,
-        message: "Invalid theater ID",
+        message: "Valid name, location, and optional address are required.",
       });
-      return;
     }
 
-    const { name, city, address } = req.body;
+    const theater = await prisma.theater.create({
+      data: {
+        name: name.trim(),
+        city: location.trim(),
+        address: address !== undefined ? address.trim() : location.trim(),
+      },
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Theater created successfully.",
+      data: theater,
+    });
+  } catch (error) {
+    console.error("Create theater error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create theater.",
+    });
+  }
+});
+
+// PUT /api/theaters/:id
+// Admin only: Update a theater
+router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const theaterId = Number(req.params.id);
+    const { name, location, address } = req.body;
+
+    if (!Number.isInteger(theaterId) || theaterId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid theater ID.",
+      });
+    }
+
+    if (
+      name === undefined &&
+      location === undefined &&
+      address === undefined
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide at least one field to update.",
+      });
+    }
 
     if (
       (name !== undefined &&
         (typeof name !== "string" || !name.trim())) ||
-      (city !== undefined &&
-        (typeof city !== "string" || !city.trim())) ||
-      (address !== undefined &&
-        (typeof address !== "string" || !address.trim()))
+      (location !== undefined &&
+        (typeof location !== "string" || !location.trim())) ||
+      (address !== undefined && typeof address !== "string")
     ) {
-      res.status(400).json({
+      return res.status(400).json({
         success: false,
-        message: "Provided fields must be non-empty strings",
+        message: "Invalid theater update data.",
       });
-      return;
     }
 
     const existingTheater = await prisma.theater.findUnique({
-      where: { id },
-    });
-
-    if (!existingTheater) {
-      res.status(404).json({
-        success: false,
-        message: "Theater not found",
-      });
-      return;
-    }
-
-    const theater = await prisma.theater.update({
-      where: { id },
-      data: {
-        ...(name !== undefined && { name: name.trim() }),
-        ...(city !== undefined && { city: city.trim() }),
-        ...(address !== undefined && { address: address.trim() }),
+      where: {
+        id: theaterId,
       },
     });
 
-    res.status(200).json({
+    if (!existingTheater) {
+      return res.status(404).json({
+        success: false,
+        message: "Theater not found.",
+      });
+    }
+
+    const updatedTheater = await prisma.theater.update({
+      where: {
+        id: theaterId,
+      },
+      data: {
+        ...(name !== undefined ? { name: name.trim() } : {}),
+        ...(address !== undefined
+          ? { address: address.trim() }
+          : location !== undefined
+            ? { address: location.trim() }
+            : {}),
+      },
+    });
+
+    return res.status(200).json({
       success: true,
-      message: "Theater updated successfully",
-      data: theater,
+      message: "Theater updated successfully.",
+      data: updatedTheater,
     });
   } catch (error) {
-    console.error("Error updating theater:", error);
+    console.error("Update theater error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Failed to update theater",
+      message: "Failed to update theater.",
     });
   }
 });
 
-// DELETE - Remove a theater (authentication required)
-router.delete("/:id", authenticateToken, async (req, res) => {
+// DELETE /api/theaters/:id
+// Admin only: Delete a theater
+router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const id = Number(req.params.id);
+    const theaterId = Number(req.params.id);
 
-    if (!Number.isInteger(id) || id <= 0) {
-      res.status(400).json({
+    if (!Number.isInteger(theaterId) || theaterId <= 0) {
+      return res.status(400).json({
         success: false,
-        message: "Invalid theater ID",
+        message: "Invalid theater ID.",
       });
-      return;
     }
 
-    const theater = await prisma.theater.findUnique({
-      where: { id },
+    const existingTheater = await prisma.theater.findUnique({
+      where: {
+        id: theaterId,
+      },
+      include: {
+        shows: true,
+      },
     });
 
-    if (!theater) {
-      res.status(404).json({
+    if (!existingTheater) {
+      return res.status(404).json({
         success: false,
-        message: "Theater not found",
+        message: "Theater not found.",
       });
-      return;
+    }
+
+    // Do not delete a theater that has shows associated with it.
+    if (existingTheater.shows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "Cannot delete this theater because it has associated shows. Remove or reassign those shows first.",
+      });
     }
 
     await prisma.theater.delete({
-      where: { id },
+      where: {
+        id: theaterId,
+      },
     });
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "Theater deleted successfully",
+      message: "Theater deleted successfully.",
     });
   } catch (error) {
-    console.error("Error deleting theater:", error);
+    console.error("Delete theater error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Failed to delete theater",
+      message: "Failed to delete theater.",
     });
   }
 });
