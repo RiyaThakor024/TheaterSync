@@ -1,0 +1,117 @@
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Movie {
+  id              Int         @id @default(autoincrement())
+  title           String      @unique
+  description     String      @db.Text
+  genre           String
+  language        String
+  durationMinutes Int
+  rating          Float?
+  posterUrl       String?
+  releaseDate     DateTime?
+  status          MovieStatus @default(NOW_SHOWING)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  shows Show[]
+}
+
+enum MovieStatus {
+  NOW_SHOWING
+  UPCOMING
+}
+
+model Theater {
+  id        Int      @id @default(autoincrement())
+  name      String
+  city      String
+  address   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shows Show[]
+}
+
+model Show {
+  id             Int      @id @default(autoincrement())
+  movieId        Int
+  theaterId      Int
+  showDate       DateTime
+  showTime       String
+  ticketPrice    Float
+  totalSeats     Int      @default(100)
+  availableSeats Int      @default(100)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  movie    Movie   @relation(fields: [movieId], references: [id])
+  theater  Theater @relation(fields: [theaterId], references: [id])
+  bookings Booking[]
+  seats    Seat[]
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String
+  role      UserRole @default(CUSTOMER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookings Booking[]
+}
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+}
+
+model Booking {
+  id        Int           @id @default(autoincrement())
+  userId    Int
+  showId    Int
+  totalPrice Float
+  status    BookingStatus @default(CONFIRMED)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  user  User  @relation(fields: [userId], references: [id])
+  show  Show  @relation(fields: [showId], references: [id])
+  seats Seat[]
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+}
+
+model Seat {
+  id           Int        @id @default(autoincrement())
+  showId       Int
+  seatNumber   String
+  status       SeatStatus @default(AVAILABLE)
+  bookingId    Int?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  show    Show     @relation(fields: [showId], references: [id])
+  booking Booking? @relation(fields: [bookingId], references: [id])
+
+  @@unique([showId, seatNumber])
+  @@index([bookingId])
+}
+
+enum SeatStatus {
+  AVAILABLE
+  BOOKED
+}
